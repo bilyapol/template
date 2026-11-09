@@ -22,7 +22,6 @@ services:
       - .env
     environment:
       DATABASE_URL: postgres://app:app@db:5432/app
-      APP_ENV: development
 
 volumes:
   pgdata:

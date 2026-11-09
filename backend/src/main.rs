@@ -6,14 +6,9 @@ use axum::{
     Router,
     http::{HeaderValue, Method, header::CONTENT_TYPE},
     middleware,
-    routing::{any, get, post},
+    routing::{any, get},
 };
-use backend::middleware::rate_limit::ClientIpKeyExtractor;
-use openidconnect::{IssuerUrl, core::CoreProviderMetadata};
 use sqlx::PgPool;
-use std::net::SocketAddr;
-use std::sync::Arc;
-use tower_governor::{GovernorLayer, governor::GovernorConfigBuilder};
 use tower_http::{
     compression::CompressionLayer,
     cors::CorsLayer,
@@ -31,9 +26,6 @@ async fn main() {
         .init();
 
     let config = config::AppConfig::from_env().expect("Failed to load config");
-    if let Err(e) = config.validate() {
-        panic!("Invalid configuration: {e}");
-    }
     let db = PgPool::connect(&config.database_url)
         .await
         .expect("Failed to connect to database");
@@ -43,30 +35,9 @@ async fn main() {
         .await
         .expect("Failed to run migrations");
 
-    let http_client = reqwest::Client::new();
-
-    // Only discover Google OIDC if credentials are configured
-    let oidc_metadata = if config.google_oauth_enabled() {
-        tracing::info!("Google OAuth enabled");
-        let issuer =
-            IssuerUrl::new("https://accounts.google.com".to_string()).expect("Invalid issuer URL");
-        let metadata = CoreProviderMetadata::discover_async(issuer, &http_client)
-            .await
-            .expect("Failed to discover Google OIDC configuration");
-        Some(metadata)
-    } else if config.dev_login_enabled() {
-        tracing::warn!("Google OAuth not configured — dev-mode login enabled");
-        None
-    } else {
-        tracing::warn!("Google OAuth not configured — login is disabled in production");
-        None
-    };
-
     let state = AppState {
         db,
         config: config.clone(),
-        http: http_client,
-        oidc_metadata,
     };
 
     let frontend_dist =
@@ -77,49 +48,9 @@ async fn main() {
         .parse::<HeaderValue>()
         .expect("Invalid FRONTEND_URL");
 
-    // Rate limiting: 60 requests per minute per IP
-    let governor_conf = Arc::new(
-        GovernorConfigBuilder::default()
-            .per_second(1)
-            .burst_size(60)
-            .key_extractor(ClientIpKeyExtractor {
-                trust_proxy: config.trust_proxy,
-            })
-            .finish()
-            .expect("Failed to build rate limiter config"),
-    );
-
-    // Rate-limited API routes
-    let mut api_routes = Router::new()
-        // Auth (always available)
-        .route("/api/auth/logout", post(controllers::auth::logout))
-        .route("/api/auth/mode", get(controllers::auth::auth_mode))
-        // User
-        .route("/api/user/me", get(controllers::user::me))
-        // Docs
-        .route("/api/docs", get(controllers::docs::list_docs))
-        .route("/api/docs/{slug}", get(controllers::docs::get_doc));
-
-    if config.google_oauth_enabled() {
-        // Google OAuth routes
-        api_routes = api_routes
-            .route("/api/auth/google", get(controllers::auth::google_login))
-            .route(
-                "/api/auth/google/callback",
-                get(controllers::auth::google_callback),
-            );
-    } else if config.dev_login_enabled() {
-        // Dev-mode login (email-only, no password, no external deps)
-        api_routes = api_routes.route("/api/auth/dev-login", post(controllers::auth::dev_login));
-    }
-
-    let api_routes = api_routes.layer(GovernorLayer::new(governor_conf));
-
     let app = Router::new()
-        // Health routes — outside rate limiter
         .route("/api/health", get(controllers::health::health))
         .route("/api/ready", get(controllers::health::ready))
-        .merge(api_routes)
         // Unknown API paths get a JSON 404 instead of the SPA's index.html
         .route("/api/{*path}", any(api_not_found))
         .with_state(state)
@@ -148,13 +79,10 @@ async fn main() {
         .await
         .expect("Failed to bind");
 
-    axum::serve(
-        listener,
-        app.into_make_service_with_connect_info::<SocketAddr>(),
-    )
-    .with_graceful_shutdown(shutdown_signal())
-    .await
-    .expect("Server error");
+    axum::serve(listener, app)
+        .with_graceful_shutdown(shutdown_signal())
+        .await
+        .expect("Server error");
 
     tracing::info!("Server shut down gracefully");
 }
