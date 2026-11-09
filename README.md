@@ -9,8 +9,10 @@ Based on [rust4all-template](https://github.com/rust4ai/rust4all-template) (MIT)
 
 ## 30-Second Start
 
+Click **Use this template** on GitHub, or from the command line:
+
 ```bash
-git clone https://github.com/<you>/template.git my-app
+gh repo create my-app --template bilyapol/template --private --clone
 cd my-app
 cp .env.example .env
 ./dev.sh
@@ -19,6 +21,9 @@ cp .env.example .env
 Open [http://localhost:5173](http://localhost:5173).
 
 `dev.sh` handles everything: starts PostgreSQL (Docker), the Rust backend, and the React dev server.
+
+Each project gets its own database volume, but they all use port 5433, so stop one project's
+database (`docker compose stop db`) before starting another's.
 
 ### What You Need
 
